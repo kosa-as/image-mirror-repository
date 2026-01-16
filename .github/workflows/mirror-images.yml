@@ -1,36 +1,79 @@
-# This is a basic workflow to help you get started with Actions
+name: Mirror third-party images to GHCR
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 3 * * *"   # 每天 03:00 UTC；你可按需调整
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+env:
+  TARGET_REGISTRY: ghcr.io
+  TARGET_OWNER: ${{ github.repository_owner }}
+  # 可选：统一加前缀，便于区分这是镜像缓存
+  TARGET_NAMESPACE: mirror
+
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  mirror:
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.TARGET_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      # 可选：如果你拉 Docker Hub 经常限流，可配置 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+      - name: Log in to Docker Hub (optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Mirror images
+        shell: bash
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          set -euo pipefail
+
+          # 你要转存的镜像清单（可自行增删）
+          IMAGES=(
+            "docker.io/bitnamilegacy/os-shell:12-debian-12-r51"
+            "docker.io/bitnamilegacy/kafka:4.0.0-debian-12-r10"
+            "docker.io/bitnamilegacy/kubectl:1.33.4-debian-12-r0"
+            "docker.io/bitnamilegacy/jmx-exporter:1.4.0-debian-12-r0"
+            "docker.io/library/registry:2"
+          )
+
+          for SRC in "${IMAGES[@]}"; do
+            # 解析：registry/repo:tag
+            REGISTRY="${SRC%%/*}"                  # docker.io
+            REST="${SRC#*/}"                       # bitnamilegacy/os-shell:...
+            REPO_TAG="${REST#*/}"                  # os-shell:...  (当REST是library/registry:2时会变成 registry:2)
+            NS_REPO="${REST%%:*}"                  # bitnamilegacy/os-shell  或 library/registry
+            TAG="${SRC##*:}"                       # tag
+
+            # 目标命名：ghcr.io/<owner>/<namespace>/<原registry>/<原namespace>/<repo>:<tag>
+            # 这样能避免不同上游 registry / namespace 冲突
+            # 示例：ghcr.io/acme/mirror/docker.io/bitnamilegacy/os-shell:12-debian-12-r51
+            DST="${TARGET_REGISTRY}/${TARGET_OWNER}/${TARGET_NAMESPACE}/${REGISTRY}/${NS_REPO}:${TAG}"
+
+            echo "==> Pull  : ${SRC}"
+            docker pull "${SRC}"
+
+            echo "==> Tag   : ${SRC} -> ${DST}"
+            docker tag "${SRC}" "${DST}"
+
+            echo "==> Push  : ${DST}"
+            docker push "${DST}"
+
+            echo "==> Done  : ${SRC}"
+            echo
+          done
