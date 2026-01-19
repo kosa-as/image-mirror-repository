@@ -3,16 +3,15 @@ name: Mirror third-party images to GHCR
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 3 * * *"   # 每天 03:00 UTC；你可按需调整
+    - cron: "0 3 * * *"   # 每天 03:00 UTC
 
 permissions:
-  contents: read
+  contents: write    # 方案B需要创建/更新 Release
   packages: write
 
 env:
   TARGET_REGISTRY: ghcr.io
   TARGET_OWNER: ${{ github.repository_owner }}
-  # 可选：统一加前缀，便于区分这是镜像缓存
   TARGET_NAMESPACE: mirror
 
 jobs:
@@ -29,7 +28,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 可选：如果你拉 Docker Hub 经常限流，可配置 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+      # 可选：Docker Hub 限流时使用
       - name: Log in to Docker Hub (optional)
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -44,12 +43,12 @@ jobs:
             echo "Docker Hub login: skipped (missing secrets)"
           fi
 
-      - name: Mirror images
+      - name: Mirror images to GHCR and export tar
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p out
 
-          # 你要转存的镜像清单（可自行增删）
           IMAGES=(
             "docker.io/bitnamilegacy/os-shell:12-debian-12-r51"
             "docker.io/bitnamilegacy/kafka:4.0.0-debian-12-r10"
@@ -59,16 +58,11 @@ jobs:
           )
 
           for SRC in "${IMAGES[@]}"; do
-            # 解析：registry/repo:tag
-            REGISTRY="${SRC%%/*}"                  # docker.io
-            REST="${SRC#*/}"                       # bitnamilegacy/os-shell:...
-            REPO_TAG="${REST#*/}"                  # os-shell:...  (当REST是library/registry:2时会变成 registry:2)
-            NS_REPO="${REST%%:*}"                  # bitnamilegacy/os-shell  或 library/registry
-            TAG="${SRC##*:}"                       # tag
+            REGISTRY="${SRC%%/*}"      # docker.io
+            REST="${SRC#*/}"           # bitnamilegacy/kafka:...
+            NS_REPO="${REST%%:*}"      # bitnamilegacy/kafka
+            TAG="${SRC##*:}"           # 4.0.0-debian-12-r10
 
-            # 目标命名：ghcr.io/<owner>/<namespace>/<原registry>/<原namespace>/<repo>:<tag>
-            # 这样能避免不同上游 registry / namespace 冲突
-            # 示例：ghcr.io/acme/mirror/docker.io/bitnamilegacy/os-shell:12-debian-12-r51
             DST="${TARGET_REGISTRY}/${TARGET_OWNER}/${TARGET_NAMESPACE}/${REGISTRY}/${NS_REPO}:${TAG}"
 
             echo "==> Pull  : ${SRC}"
@@ -80,6 +74,34 @@ jobs:
             echo "==> Push  : ${DST}"
             docker push "${DST}"
 
+            # 导出为 tar（供浏览器下载）
+            # 文件名做安全化：把 / 和 : 替换成 _
+            SAFE_NAME="$(echo "${SRC}" | sed 's#[/:]#_#g').tar"
+            TAR_PATH="out/${SAFE_NAME}"
+
+            echo "==> Export: ${SRC} -> ${TAR_PATH}"
+            docker save -o "${TAR_PATH}" "${SRC}"
+
             echo "==> Done  : ${SRC}"
             echo
           done
+
+      # 生成 Release Tag，例如 mirror-20260117
+      - name: Compute release tag
+        id: rel
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATE_UTC="$(date -u +%Y%m%d)"
+          echo "tag=mirror-${DATE_UTC}" >> "$GITHUB_OUTPUT"
+          echo "name=Mirror images ${DATE_UTC}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to GitHub Release (scheme B)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: ${{ steps.rel.outputs.name }}
+          files: out/*.tar
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
