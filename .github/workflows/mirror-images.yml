@@ -55,6 +55,14 @@ jobs:
             "docker.io/bitnamilegacy/kubectl:1.33.4-debian-12-r0"
             "docker.io/bitnamilegacy/jmx-exporter:1.4.0-debian-12-r0"
             "docker.io/library/registry:2"
+            "docker.io/openebs/m-apiserver:2.12.2"
+            "docker.io/openebs/openebs-k8s-provisioner:2.12.2"
+            "docker.io/openebs/provisioner-localpv:3.5.0"
+            "docker.io/openebs/snapshot-controller:2.12.2"
+            "docker.io/openebs/snapshot-provisioner:2.12.2"
+            "docker.io/openebs/admission-server:2.12.2"
+            "docker.io/openebs/linux-utils:3.5.0"
+            "docker.io/openebs/m-exporter:2.12.2"
           )
 
           for SRC in "${IMAGES[@]}"; do
